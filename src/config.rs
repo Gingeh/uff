@@ -149,7 +149,16 @@ fn compute_item_shallow(item: &Item, inheritance_stack: &[InheritanceFrame]) -> 
     }
 }
 
+fn home() -> String {
+    let home_path = std::env::home_dir().unwrap();
+    home_path.to_string_lossy().to_string()
+}
+
 fn search_for_icon(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    if name.contains('/') {
+        return None; // probably a full path
+    }
+
     for dir in dirs {
         for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
             if entry.path().file_stem() == Some(OsStr::new(name))
@@ -183,12 +192,13 @@ fn compute_menu_shallow(menu: &Menu, inheritance_stack: &[InheritanceFrame]) -> 
     let mut input = Vec::new();
     for item in &menu.items {
         write!(&mut input, "{}", item.name).unwrap();
-        if let Some(icon) = &item.icon
-            && let Some(icon_path) = search_for_icon(icon, &icon_dirs)
-        {
-            write!(&mut input, "\0icon\x1f{}", icon_path.display()).unwrap();
+        if let Some(icon) = &item.icon {
+            let icon_path = search_for_icon(icon, &icon_dirs).map_or_else(
+                || icon.replace('~', &home()),
+                |path| path.display().to_string(),
+            );
+            write!(&mut input, "\0icon\x1f{icon_path}").unwrap();
         }
-        // TODO: Log an error if this failed
         writeln!(&mut input).unwrap();
     }
 
@@ -328,12 +338,11 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
                     node.entries()[0].value().is_string(),
                     "icon-dir argument must be a string"
                 );
-                let home = std::env::home_dir().context("unable to get home directory")?;
-                let path_str = node.entries()[0].value().as_string().unwrap().replace(
-                    '~',
-                    home.to_str()
-                        .context("home path contains non-utf8 characters")?,
-                );
+                let path_str = node.entries()[0]
+                    .value()
+                    .as_string()
+                    .unwrap()
+                    .replace('~', &home());
                 let path = PathBuf::from(path_str);
                 ensure!(path.is_absolute(), "icon-dir path must be absolute");
                 icon_dirs.push(path);
