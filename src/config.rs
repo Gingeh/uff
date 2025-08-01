@@ -122,7 +122,7 @@ fn compute_item_shallow(item: &Item) -> ComputedItem {
 
 fn compute_menu_shallow(menu: &Menu) -> ComputedMenu {
     let args = menu.fuzzel_args.clone();
-    // TODO: insert arguments for per-menu cache and config
+    // TODO: insert arguments for per-menu config
 
     // format: {NAME}\0icon\x1f{ICON_PATH}\n
     let mut input = Vec::new();

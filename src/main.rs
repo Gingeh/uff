@@ -12,7 +12,6 @@ use config::ComputedItem;
 
 // TODO: Search for icons
 // TODO: Create per-menu fuzzel configs in cache dir
-// TODO: Tell fuzzel to use per-menu cache
 
 pub fn main() -> Result<()> {
     let mut args = std::env::args();
