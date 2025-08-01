@@ -1,0 +1,10 @@
+[package]
+name = "uff" # Untitled Fuzzel Frontend
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+bitcode = "0.6.6"
+kdl = "6.3.4"
+sha2 = "0.10.9"
