@@ -50,7 +50,7 @@ pub struct ComputedProgram {
 }
 
 struct InheritanceFrame {
-    icon_dirs: Vec<String>,
+    icon_dirs: Vec<PathBuf>,
 }
 
 impl InheritanceFrame {
@@ -60,16 +60,14 @@ impl InheritanceFrame {
             data_dirs = "/usr/local/share/:/usr/share/".to_string();
         }
 
-        let mut icon_dirs: Vec<String> = std::env::split_paths(&data_dirs)
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect();
+        let mut icon_dirs: Vec<PathBuf> = std::env::split_paths(&data_dirs).collect();
 
         let mut data_home = std::env::var("XDG_DATA_HOME").unwrap_or_default();
         if data_home.is_empty() {
             let home = std::env::home_dir().unwrap();
             data_home = format!("{}/.local/share/", home.display());
         }
-        icon_dirs.push(data_home);
+        icon_dirs.push(PathBuf::from(data_home));
 
         Self { icon_dirs }
     }
@@ -151,7 +149,7 @@ fn compute_item_shallow(item: &Item, inheritance_stack: &[InheritanceFrame]) -> 
     }
 }
 
-fn search_for_icon(name: &str, dirs: &[String]) -> Option<PathBuf> {
+fn search_for_icon(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     for dir in dirs {
         for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
             if entry.path().file_stem() == Some(OsStr::new(name))
@@ -169,7 +167,7 @@ fn compute_menu_shallow(menu: &Menu, inheritance_stack: &[InheritanceFrame]) -> 
     let args = menu.fuzzel_args.clone();
     // TODO: insert arguments for per-menu config
 
-    let icon_dirs: Vec<String> = menu
+    let icon_dirs: Vec<PathBuf> = menu
         .icon_dirs
         .iter()
         .cloned()
@@ -234,7 +232,7 @@ fn compute_menu_deep(
 struct Menu {
     fuzzel_args: Vec<String>,
     fuzzel_config: HashMap<String, String>,
-    icon_dirs: Vec<String>,
+    icon_dirs: Vec<PathBuf>,
     items: Vec<Item>,
 }
 
@@ -330,7 +328,15 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
                     node.entries()[0].value().is_string(),
                     "icon-dir argument must be a string"
                 );
-                icon_dirs.push(node.entries()[0].value().as_string().unwrap().to_owned());
+                let home = std::env::home_dir().context("unable to get home directory")?;
+                let path_str = node.entries()[0].value().as_string().unwrap().replace(
+                    '~',
+                    home.to_str()
+                        .context("home path contains non-utf8 characters")?,
+                );
+                let path = PathBuf::from(path_str);
+                ensure!(path.is_absolute(), "icon-dir path must be absolute");
+                icon_dirs.push(path);
             }
             "menu" | "program" => {
                 ensure!(
