@@ -10,7 +10,6 @@ use std::{
 mod config;
 use config::ComputedItem;
 
-// TODO: Search for icons
 // TODO: Create per-menu fuzzel configs in cache dir
 
 pub fn main() -> Result<()> {

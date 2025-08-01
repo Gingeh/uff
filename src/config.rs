@@ -4,9 +4,11 @@ use kdl::{KdlDocument, KdlNode};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     io::Write,
     path::{Path, PathBuf},
 };
+use walkdir::WalkDir;
 
 pub fn default_config_path() -> PathBuf {
     let mut path;
@@ -45,6 +47,32 @@ pub struct ComputedMenu {
 #[derive(Encode, Decode, Debug)]
 pub struct ComputedProgram {
     pub command: Vec<String>,
+}
+
+struct InheritanceFrame {
+    icon_dirs: Vec<String>,
+}
+
+impl InheritanceFrame {
+    fn default() -> Self {
+        let mut data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+        if data_dirs.is_empty() {
+            data_dirs = "/usr/local/share/:/usr/share/".to_string();
+        }
+
+        let mut icon_dirs: Vec<String> = std::env::split_paths(&data_dirs)
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+
+        let mut data_home = std::env::var("XDG_DATA_HOME").unwrap_or_default();
+        if data_home.is_empty() {
+            let home = std::env::home_dir().unwrap();
+            data_home = format!("{}/.local/share/", home.display());
+        }
+        icon_dirs.push(data_home);
+
+        Self { icon_dirs }
+    }
 }
 
 pub fn get_computed_config(path: &Path) -> Result<ComputedConfig> {
@@ -100,9 +128,10 @@ fn cache_config(path: &Path, computed_config: &ComputedConfig) {
 fn compute_config(config_string: &str, hash: &[u8]) -> Result<ComputedConfig> {
     let config = parse_config(config_string)?;
     let mut items = Vec::new();
-    let mut initial_menu = compute_menu_shallow(&config);
+    let mut inheritance_stack = vec![InheritanceFrame::default()];
+    let mut initial_menu = compute_menu_shallow(&config, &inheritance_stack);
     initial_menu.items_offset = 0;
-    compute_menu_deep(&config, &mut items);
+    compute_menu_deep(&config, &mut items, &mut inheritance_stack);
 
     Ok(ComputedConfig {
         hash: std::array::from_fn(|i| hash[i]),
@@ -111,27 +140,57 @@ fn compute_config(config_string: &str, hash: &[u8]) -> Result<ComputedConfig> {
     })
 }
 
-fn compute_item_shallow(item: &Item) -> ComputedItem {
+fn compute_item_shallow(item: &Item, inheritance_stack: &[InheritanceFrame]) -> ComputedItem {
     match item.contents {
-        ItemContents::Menu(ref menu) => ComputedItem::Menu(compute_menu_shallow(menu)),
+        ItemContents::Menu(ref menu) => {
+            ComputedItem::Menu(compute_menu_shallow(menu, inheritance_stack))
+        }
         ItemContents::Program(ref program) => ComputedItem::Program(ComputedProgram {
             command: program.command.clone(),
         }),
     }
 }
 
-fn compute_menu_shallow(menu: &Menu) -> ComputedMenu {
+fn search_for_icon(name: &str, dirs: &[String]) -> Option<PathBuf> {
+    for dir in dirs {
+        for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
+            if entry.path().file_stem() == Some(OsStr::new(name))
+                && (entry.path().extension() == Some(OsStr::new("png"))
+                    || entry.path().extension() == Some(OsStr::new("svg")))
+            {
+                return Some(entry.into_path());
+            }
+        }
+    }
+    None
+}
+
+fn compute_menu_shallow(menu: &Menu, inheritance_stack: &[InheritanceFrame]) -> ComputedMenu {
     let args = menu.fuzzel_args.clone();
     // TODO: insert arguments for per-menu config
+
+    let icon_dirs: Vec<String> = menu
+        .icon_dirs
+        .iter()
+        .cloned()
+        .chain(
+            inheritance_stack
+                .iter()
+                .rev()
+                .flat_map(|frame| frame.icon_dirs.clone()),
+        )
+        .collect();
 
     // format: {NAME}\0icon\x1f{ICON_PATH}\n
     let mut input = Vec::new();
     for item in &menu.items {
         write!(&mut input, "{}", item.name).unwrap();
-        if let Some(icon) = &item.icon {
-            // TODO: absolutize icon paths
-            write!(&mut input, "\0icon\x1f{icon}").unwrap();
+        if let Some(icon) = &item.icon
+            && let Some(icon_path) = search_for_icon(icon, &icon_dirs)
+        {
+            write!(&mut input, "\0icon\x1f{}", icon_path.display()).unwrap();
         }
+        // TODO: Log an error if this failed
         writeln!(&mut input).unwrap();
     }
 
@@ -142,11 +201,19 @@ fn compute_menu_shallow(menu: &Menu) -> ComputedMenu {
     }
 }
 
-fn compute_menu_deep(menu: &Menu, items: &mut Vec<ComputedItem>) {
+fn compute_menu_deep(
+    menu: &Menu,
+    items: &mut Vec<ComputedItem>,
+    inheritance_stack: &mut Vec<InheritanceFrame>,
+) {
+    inheritance_stack.push(InheritanceFrame {
+        icon_dirs: menu.icon_dirs.clone(),
+    });
+
     let mut current_index = items.len();
 
     for item in &menu.items {
-        items.push(compute_item_shallow(item));
+        items.push(compute_item_shallow(item, inheritance_stack));
     }
 
     for item in &menu.items {
@@ -155,10 +222,12 @@ fn compute_menu_deep(menu: &Menu, items: &mut Vec<ComputedItem>) {
             if let &mut ComputedItem::Menu(ref mut computed_menu) = &mut items[current_index] {
                 computed_menu.items_offset = offset;
             }
-            compute_menu_deep(menu, items);
+            compute_menu_deep(menu, items, inheritance_stack);
         }
         current_index += 1;
     }
+
+    inheritance_stack.pop();
 }
 
 #[derive(Debug)]
