@@ -93,6 +93,7 @@ fn read_cached_config(path: &Path) -> Option<ComputedConfig> {
 // TODO: Log errors
 fn cache_config(path: &Path, computed_config: &ComputedConfig) {
     let bytes = bitcode::encode(computed_config);
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
     let _ = std::fs::write(path, bytes);
 }
 
