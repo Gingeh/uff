@@ -1,0 +1,22 @@
+fuzzel-args --minimal-lines
+icon-dir "~/.config/uff/"
+
+program Firefox {
+    command firefox
+    icon firefox
+}
+
+program Vesktop {
+    command flatpak run dev.vencord.Vesktop
+    icon dev.vencord.Vesktop
+}
+
+menu Submenu {
+    fuzzel-args --minimal-lines --hide-prompt
+    icon tbh
+
+    program Yippee {
+        command notify-send yippee
+        icon tbh
+    }
+}
