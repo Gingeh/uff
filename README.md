@@ -1,5 +1,7 @@
 # uff: untitled fuzzel frontend
 
+![untitled fuzzel frontend](demo.png)
+
 uff is strongly inspired by [raffi](https://github.com/chmouel/raffi/).
 
 ## feature comparison
