@@ -1,5 +1,4 @@
 fuzzel-args --minimal-lines
-icon-dir "~/.config/uff/"
 
 program Firefox {
     command firefox
@@ -13,6 +12,7 @@ program Vesktop {
 
 menu Submenu {
     fuzzel-args --minimal-lines --hide-prompt
+    icon-dir "~/.config/uff/"
     icon tbh
 
     program Yippee {

@@ -3,7 +3,7 @@ use bitcode::{Decode, Encode};
 use kdl::{KdlDocument, KdlNode};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ffi::OsStr,
     io::Write,
     path::{Path, PathBuf},
@@ -154,7 +154,7 @@ fn home() -> String {
     home_path.to_string_lossy().to_string()
 }
 
-fn search_for_icon(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+fn search_for_icon<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> Option<PathBuf> {
     if name.contains('/') {
         return None; // probably a full path
     }
@@ -176,15 +176,15 @@ fn compute_menu_shallow(menu: &Menu, inheritance_stack: &[InheritanceFrame]) -> 
     let args = menu.fuzzel_args.clone();
     // TODO: insert arguments for per-menu config
 
-    let icon_dirs: Vec<PathBuf> = menu
+    let icon_dirs: VecDeque<&Path> = menu
         .icon_dirs
         .iter()
-        .cloned()
+        .map(PathBuf::as_path)
         .chain(
             inheritance_stack
                 .iter()
                 .rev()
-                .flat_map(|frame| frame.icon_dirs.clone()),
+                .flat_map(|frame| frame.icon_dirs.iter().map(PathBuf::as_path)),
         )
         .collect();
 
@@ -193,7 +193,14 @@ fn compute_menu_shallow(menu: &Menu, inheritance_stack: &[InheritanceFrame]) -> 
     for item in &menu.items {
         write!(&mut input, "{}", item.name).unwrap();
         if let Some(icon) = &item.icon {
-            let icon_path = search_for_icon(icon, &icon_dirs).map_or_else(
+            let mut item_icon_dirs = icon_dirs.clone();
+            if let ItemContents::Menu(menu) = &item.contents {
+                for icon_dir in &menu.icon_dirs {
+                    item_icon_dirs.push_front(icon_dir);
+                }
+            }
+
+            let icon_path = search_for_icon(icon, item_icon_dirs).map_or_else(
                 || icon.replace('~', &home()),
                 |path| path.display().to_string(),
             );
