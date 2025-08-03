@@ -1,4 +1,7 @@
 fuzzel-args --minimal-lines
+fuzzel-config {
+    width "12"
+}
 
 program Firefox {
     command firefox
@@ -12,6 +15,11 @@ program Vesktop {
 
 menu Submenu {
     fuzzel-args --minimal-lines --hide-prompt
+    fuzzel-config {
+        font "monospace:size=20"
+        line-height "30"
+    }
+
     icon-dir "~/.config/uff/"
     icon tbh
 

@@ -3,14 +3,15 @@ use bitcode::{Decode, Encode};
 use kdl::{KdlDocument, KdlNode};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     ffi::OsStr,
+    fs::File,
     io::Write,
     path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
 
-pub fn default_config_path() -> PathBuf {
+pub fn default_config_dir() -> PathBuf {
     let mut path;
     if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
         path = PathBuf::from(config_home);
@@ -18,6 +19,11 @@ pub fn default_config_path() -> PathBuf {
         path = std::env::home_dir().unwrap();
         path.push(".config");
     }
+    path
+}
+
+pub fn default_config_path() -> PathBuf {
+    let mut path = default_config_dir();
     path.push(env!("CARGO_BIN_NAME"));
     path.push("default.kdl");
     path
@@ -51,6 +57,7 @@ pub struct ComputedProgram {
 
 struct InheritanceFrame {
     icon_dirs: Vec<PathBuf>,
+    fuzzel_config_id: Option<usize>,
 }
 
 impl InheritanceFrame {
@@ -69,7 +76,10 @@ impl InheritanceFrame {
         }
         icon_dirs.push(PathBuf::from(data_home));
 
-        Self { icon_dirs }
+        Self {
+            icon_dirs,
+            fuzzel_config_id: None,
+        }
     }
 }
 
@@ -78,7 +88,12 @@ pub fn get_computed_config(path: &Path) -> Result<ComputedConfig> {
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let actual_hash = Sha256::digest(&config_string);
 
-    let cache_path = make_cache_path(path);
+    let preset_name = path
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .context("preset name contains non-utf8 characters")?;
+    let cache_path = make_cache_path(preset_name);
     let maybe_cached_config = read_cached_config(&cache_path);
     if let Some(cached_config) = maybe_cached_config
         && cached_config.hash == actual_hash[..8]
@@ -86,16 +101,51 @@ pub fn get_computed_config(path: &Path) -> Result<ComputedConfig> {
         return Ok(cached_config);
     }
 
-    let computed_config = compute_config(&config_string, actual_hash.as_slice())?;
+    let computed_config = compute_config(&config_string, actual_hash.as_slice(), preset_name)?;
     cache_config(&cache_path, &computed_config);
     Ok(computed_config)
 }
 
-fn make_cache_path(path: &Path) -> PathBuf {
+fn make_cache_path(preset_name: &str) -> PathBuf {
     let mut cache_path = get_cache_dir();
-    cache_path.push(path.file_stem().unwrap());
+    cache_path.push(preset_name);
     cache_path.set_extension("cache");
     cache_path
+}
+
+fn make_fuzzel_config_path(id: usize, preset_name: &str) -> PathBuf {
+    let mut config_path = get_cache_dir();
+    config_path.push(format!("{preset_name}{id}"));
+    config_path.set_extension("fuzzel.ini");
+    config_path
+}
+
+fn default_fuzzel_config_path() -> PathBuf {
+    let mut path = default_config_dir();
+    path.push("fuzzel");
+    path.push("fuzzel.ini");
+    path
+}
+
+fn create_fuzzel_config(
+    pairs: &[(String, String)],
+    id: usize,
+    inherit_id: Option<usize>,
+    preset_name: &str,
+) -> PathBuf {
+    let config_path = make_fuzzel_config_path(id, preset_name);
+    let mut config_file = File::create(&config_path).unwrap();
+
+    let inherit_path = inherit_id.map_or_else(default_fuzzel_config_path, |inherit_id| {
+        make_fuzzel_config_path(inherit_id, preset_name)
+    });
+    writeln!(&mut config_file, "include={}", inherit_path.display()).unwrap();
+
+    for (key, value) in pairs {
+        writeln!(&mut config_file, "{key}={value}").unwrap();
+    }
+
+    config_path
 }
 
 fn get_cache_dir() -> PathBuf {
@@ -123,13 +173,13 @@ fn cache_config(path: &Path, computed_config: &ComputedConfig) {
     let _ = std::fs::write(path, bytes);
 }
 
-fn compute_config(config_string: &str, hash: &[u8]) -> Result<ComputedConfig> {
+fn compute_config(config_string: &str, hash: &[u8], preset_name: &str) -> Result<ComputedConfig> {
     let config = parse_config(config_string)?;
     let mut items = Vec::new();
     let mut inheritance_stack = vec![InheritanceFrame::default()];
-    let mut initial_menu = compute_menu_shallow(&config, &inheritance_stack);
+    let mut initial_menu = compute_menu_shallow(&config, &inheritance_stack, 0, preset_name);
     initial_menu.items_offset = 0;
-    compute_menu_deep(&config, &mut items, &mut inheritance_stack);
+    compute_menu_deep(&config, &mut items, &mut inheritance_stack, 0, preset_name);
 
     Ok(ComputedConfig {
         hash: std::array::from_fn(|i| hash[i]),
@@ -138,11 +188,19 @@ fn compute_config(config_string: &str, hash: &[u8]) -> Result<ComputedConfig> {
     })
 }
 
-fn compute_item_shallow(item: &Item, inheritance_stack: &[InheritanceFrame]) -> ComputedItem {
+fn compute_item_shallow(
+    item: &Item,
+    inheritance_stack: &[InheritanceFrame],
+    id: usize,
+    preset_name: &str,
+) -> ComputedItem {
     match item.contents {
-        ItemContents::Menu(ref menu) => {
-            ComputedItem::Menu(compute_menu_shallow(menu, inheritance_stack))
-        }
+        ItemContents::Menu(ref menu) => ComputedItem::Menu(compute_menu_shallow(
+            menu,
+            inheritance_stack,
+            id,
+            preset_name,
+        )),
         ItemContents::Program(ref program) => ComputedItem::Program(ComputedProgram {
             command: program.command.clone(),
         }),
@@ -172,9 +230,36 @@ fn search_for_icon<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> 
     None
 }
 
-fn compute_menu_shallow(menu: &Menu, inheritance_stack: &[InheritanceFrame]) -> ComputedMenu {
-    let args = menu.fuzzel_args.clone();
-    // TODO: insert arguments for per-menu config
+fn compute_menu_shallow(
+    menu: &Menu,
+    inheritance_stack: &[InheritanceFrame],
+    id: usize,
+    preset_name: &str,
+) -> ComputedMenu {
+    let mut args = menu.fuzzel_args.clone();
+
+    let last_config = inheritance_stack
+        .iter()
+        .filter_map(|frame| frame.fuzzel_config_id)
+        .next_back();
+
+    if menu.fuzzel_config.is_empty() {
+        if let Some(last_config) = last_config {
+            args.push("--config".to_string());
+            args.push(
+                make_fuzzel_config_path(last_config, preset_name)
+                    .display()
+                    .to_string(),
+            );
+        }
+    } else {
+        args.push("--config".to_string());
+        args.push(
+            create_fuzzel_config(&menu.fuzzel_config, id, last_config, preset_name)
+                .display()
+                .to_string(),
+        );
+    }
 
     let icon_dirs: VecDeque<&Path> = menu
         .icon_dirs
@@ -220,15 +305,28 @@ fn compute_menu_deep(
     menu: &Menu,
     items: &mut Vec<ComputedItem>,
     inheritance_stack: &mut Vec<InheritanceFrame>,
+    id: usize,
+    preset_name: &str,
 ) {
     inheritance_stack.push(InheritanceFrame {
         icon_dirs: menu.icon_dirs.clone(),
+        fuzzel_config_id: if menu.fuzzel_config.is_empty() {
+            None
+        } else {
+            Some(id)
+        },
     });
 
     let mut current_index = items.len();
 
     for item in &menu.items {
-        items.push(compute_item_shallow(item, inheritance_stack));
+        let id = items.len() + 1;
+        items.push(compute_item_shallow(
+            item,
+            inheritance_stack,
+            id,
+            preset_name,
+        ));
     }
 
     for item in &menu.items {
@@ -237,7 +335,8 @@ fn compute_menu_deep(
             if let &mut ComputedItem::Menu(ref mut computed_menu) = &mut items[current_index] {
                 computed_menu.items_offset = offset;
             }
-            compute_menu_deep(menu, items, inheritance_stack);
+            let id = current_index + 1;
+            compute_menu_deep(menu, items, inheritance_stack, id, preset_name);
         }
         current_index += 1;
     }
@@ -248,7 +347,7 @@ fn compute_menu_deep(
 #[derive(Debug)]
 struct Menu {
     fuzzel_args: Vec<String>,
-    fuzzel_config: HashMap<String, String>,
+    fuzzel_config: Vec<(String, String)>,
     icon_dirs: Vec<PathBuf>,
     items: Vec<Item>,
 }
@@ -280,7 +379,7 @@ fn parse_config(src: &str) -> Result<Menu> {
 
 fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
     let mut fuzzel_args = Vec::new();
-    let mut fuzzel_config = HashMap::new();
+    let mut fuzzel_config = Vec::new();
     let mut icon_dirs = Vec::new();
     let mut items = Vec::new();
 
@@ -328,7 +427,7 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
                         "fuzzel-config key argument must be a string"
                     );
                     let value = kv.entries()[0].value().as_string().unwrap().to_owned();
-                    fuzzel_config.insert(key, value);
+                    fuzzel_config.push((key, value));
                 }
             }
             "icon-dir" => {

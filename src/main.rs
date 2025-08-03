@@ -10,8 +10,6 @@ use std::{
 mod config;
 use config::ComputedItem;
 
-// TODO: Create per-menu fuzzel configs in cache dir
-
 pub fn main() -> Result<()> {
     let mut args = std::env::args();
     ensure!(args.len() < 3, "expected at most one argument");

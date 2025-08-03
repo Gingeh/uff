@@ -11,13 +11,18 @@ uff is strongly inspired by [raffi](https://github.com/chmouel/raffi/).
 |        **submenus**        | **yes** |    no     |
 |    **custom icon dirs**    | **yes** |    no     |
 |  **per-menu fuzzel args**  | **yes** |    no     |
-| **per-menu fuzzel config** |   wip   |    no     |
+| **per-menu fuzzel config** | **yes** |    no     |
 |     **inline scripts**     |   no    |  **yes**  |
 |   **conditional items**    |   no    |  **yes**  |
 
 ## configuration
 ```kdl
 fuzzel-args foo bar baz
+
+fuzzel-config {
+    key value
+}
+// ^ inherited by submenus
 
 icon-dir "/etc/whatever"
 // ^ can be repeated for more dirs, inherited by submenus
