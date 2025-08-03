@@ -50,14 +50,29 @@ pub struct ComputedMenu {
     pub items_offset: usize,
 }
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, Clone)]
 pub struct ComputedProgram {
     pub command: Vec<String>,
 }
 
+#[derive(Clone)]
 struct InheritanceFrame {
     icon_dirs: Vec<PathBuf>,
     fuzzel_config_id: Option<usize>,
+}
+
+// Intermediate tree structure that holds fully resolved data
+#[derive(Debug)]
+struct ResolvedMenu {
+    args: Vec<String>,
+    input: Vec<u8>,
+    items: Vec<ResolvedItem>,
+}
+
+#[derive(Debug)]
+enum ResolvedItem {
+    Menu(ResolvedMenu),
+    Program(ComputedProgram),
 }
 
 impl InheritanceFrame {
@@ -175,11 +190,14 @@ fn cache_config(path: &Path, computed_config: &ComputedConfig) {
 
 fn compute_config(config_string: &str, hash: &[u8], preset_name: &str) -> Result<ComputedConfig> {
     let config = parse_config(config_string)?;
+    let inheritance_stack = vec![InheritanceFrame::default()];
+
+    // Build phase: create fully resolved tree with inheritance applied
+    let resolved_menu = build_resolved_menu(&config, &inheritance_stack, 0, preset_name);
+
     let mut items = Vec::new();
-    let mut inheritance_stack = vec![InheritanceFrame::default()];
-    let mut initial_menu = compute_menu_shallow(&config, &inheritance_stack, 0, preset_name);
-    initial_menu.items_offset = 0;
-    compute_menu_deep(&config, &mut items, &mut inheritance_stack, 0, preset_name);
+    // Flatten phase: convert tree to a flat list
+    let initial_menu = flatten_resolved_menu(&resolved_menu, &mut items);
 
     Ok(ComputedConfig {
         hash: std::array::from_fn(|i| hash[i]),
@@ -188,54 +206,12 @@ fn compute_config(config_string: &str, hash: &[u8], preset_name: &str) -> Result
     })
 }
 
-fn compute_item_shallow(
-    item: &Item,
-    inheritance_stack: &[InheritanceFrame],
-    id: usize,
-    preset_name: &str,
-) -> ComputedItem {
-    match item.contents {
-        ItemContents::Menu(ref menu) => ComputedItem::Menu(compute_menu_shallow(
-            menu,
-            inheritance_stack,
-            id,
-            preset_name,
-        )),
-        ItemContents::Program(ref program) => ComputedItem::Program(ComputedProgram {
-            command: program.command.clone(),
-        }),
-    }
-}
-
-fn home() -> String {
-    let home_path = std::env::home_dir().unwrap();
-    home_path.to_string_lossy().to_string()
-}
-
-fn search_for_icon<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> Option<PathBuf> {
-    if name.contains('/') {
-        return None; // probably a full path
-    }
-
-    for dir in dirs {
-        for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
-            if entry.path().file_stem() == Some(OsStr::new(name))
-                && (entry.path().extension() == Some(OsStr::new("png"))
-                    || entry.path().extension() == Some(OsStr::new("svg")))
-            {
-                return Some(entry.into_path());
-            }
-        }
-    }
-    None
-}
-
-fn compute_menu_shallow(
+fn build_resolved_menu(
     menu: &Menu,
     inheritance_stack: &[InheritanceFrame],
     id: usize,
     preset_name: &str,
-) -> ComputedMenu {
+) -> ResolvedMenu {
     let mut args = menu.fuzzel_args.clone();
 
     let last_config = inheritance_stack
@@ -261,6 +237,7 @@ fn compute_menu_shallow(
         );
     }
 
+    // Build icon dirs with inheritance
     let icon_dirs: VecDeque<&Path> = menu
         .icon_dirs
         .iter()
@@ -273,7 +250,7 @@ fn compute_menu_shallow(
         )
         .collect();
 
-    // format: {NAME}\0icon\x1f{ICON_PATH}\n
+    // Build fuzzel input format: {NAME}\0icon\x1f{ICON_PATH}\n
     let mut input = Vec::new();
     for item in &menu.items {
         write!(&mut input, "{}", item.name).unwrap();
@@ -294,54 +271,108 @@ fn compute_menu_shallow(
         writeln!(&mut input).unwrap();
     }
 
-    ComputedMenu {
-        args,
-        input,
-        items_offset: 0,
-    }
-}
-
-fn compute_menu_deep(
-    menu: &Menu,
-    items: &mut Vec<ComputedItem>,
-    inheritance_stack: &mut Vec<InheritanceFrame>,
-    id: usize,
-    preset_name: &str,
-) {
-    inheritance_stack.push(InheritanceFrame {
+    // Build child inheritance frame for recursive calls
+    let child_frame = InheritanceFrame {
         icon_dirs: menu.icon_dirs.clone(),
         fuzzel_config_id: if menu.fuzzel_config.is_empty() {
             None
         } else {
             Some(id)
         },
-    });
+    };
 
-    let mut current_index = items.len();
-
-    for item in &menu.items {
-        let id = items.len() + 1;
-        items.push(compute_item_shallow(
-            item,
-            inheritance_stack,
-            id,
-            preset_name,
-        ));
+    // Recursively build resolved items
+    let mut resolved_items = Vec::new();
+    for (item_index, item) in menu.items.iter().enumerate() {
+        let item_id = id * 1000 + item_index + 1; // Generate unique IDs for nested items
+        match &item.contents {
+            ItemContents::Menu(child_menu) => {
+                let mut child_inheritance_stack = inheritance_stack.to_vec();
+                child_inheritance_stack.push(child_frame.clone());
+                let resolved_child = build_resolved_menu(child_menu, &child_inheritance_stack, item_id, preset_name);
+                resolved_items.push(ResolvedItem::Menu(resolved_child));
+            }
+            ItemContents::Program(program) => {
+                resolved_items.push(ResolvedItem::Program(ComputedProgram {
+                    command: program.command.clone(),
+                }));
+            }
+        }
     }
 
-    for item in &menu.items {
-        if let ItemContents::Menu(menu) = &item.contents {
-            let offset = items.len();
-            if let &mut ComputedItem::Menu(ref mut computed_menu) = &mut items[current_index] {
-                computed_menu.items_offset = offset;
+    ResolvedMenu {
+        args,
+        input,
+        items: resolved_items,
+    }
+}
+
+fn flatten_resolved_menu(
+    resolved_menu: &ResolvedMenu,
+    items: &mut Vec<ComputedItem>,
+) -> ComputedMenu {
+    let items_offset = items.len();
+
+    // First pass: add all direct children to maintain adjacency
+    for resolved_item in &resolved_menu.items {
+        match resolved_item {
+            ResolvedItem::Menu(child_menu) => {
+                // Add placeholder menu item - we'll update its offset in second pass
+                items.push(ComputedItem::Menu(ComputedMenu {
+                    args: child_menu.args.clone(),
+                    input: child_menu.input.clone(),
+                    items_offset: 0, // Will be updated below
+                }));
             }
-            let id = current_index + 1;
-            compute_menu_deep(menu, items, inheritance_stack, id, preset_name);
+            ResolvedItem::Program(program) => {
+                items.push(ComputedItem::Program(program.clone()));
+            }
+        }
+    }
+
+    // Second pass: recursively flatten submenus and update their offsets
+    let mut current_index = items_offset;
+    for resolved_item in &resolved_menu.items {
+        if let ResolvedItem::Menu(child_menu) = resolved_item {
+            let child_offset = items.len();
+            // Update the offset for this menu item
+            if let ComputedItem::Menu(computed_menu) = &mut items[current_index] {
+                computed_menu.items_offset = child_offset;
+            }
+            // Recursively flatten the child menu
+            flatten_resolved_menu(child_menu, items);
         }
         current_index += 1;
     }
 
-    inheritance_stack.pop();
+    ComputedMenu {
+        args: resolved_menu.args.clone(),
+        input: resolved_menu.input.clone(),
+        items_offset,
+    }
+}
+
+fn home() -> String {
+    let home_path = std::env::home_dir().unwrap();
+    home_path.to_string_lossy().to_string()
+}
+
+fn search_for_icon<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> Option<PathBuf> {
+    if name.contains('/') {
+        return None; // probably a full path
+    }
+
+    for dir in dirs {
+        for entry in WalkDir::new(dir).into_iter().filter_map(Result::ok) {
+            if entry.path().file_stem() == Some(OsStr::new(name))
+                && (entry.path().extension() == Some(OsStr::new("png"))
+                    || entry.path().extension() == Some(OsStr::new("svg")))
+            {
+                return Some(entry.into_path());
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug)]
