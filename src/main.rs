@@ -1,8 +1,8 @@
 #![feature(exit_status_error)]
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use colog::format::CologStyle;
-use log::{info, Level, LevelFilter};
+use log::{Level, LevelFilter, info};
 use std::{
     io::Write,
     path::PathBuf,
@@ -32,10 +32,16 @@ pub fn main() -> Result<()> {
         .filter_level(LevelFilter::Info)
         .init();
 
-    let mut args = std::env::args();
-    ensure!(args.len() < 3, "expected at most one argument");
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 2 || args.get(1) == Some(&"--help".into()) || args.get(1) == Some(&"-h".into())
+    {
+        println!("usage: {} [config_path]", args[0]);
+        println!("config_path defaults to $XDG_CONFIG_HOME/uff/default.kdl");
+        return Ok(());
+    }
+
     let config_path = args
-        .nth(1)
+        .get(1)
         .map_or_else(config::default_config_path, PathBuf::from);
 
     let computed_config = config::get_computed_config(&config_path)?;
