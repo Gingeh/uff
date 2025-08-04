@@ -28,6 +28,9 @@ icon-dir "/etc/whatever"
 // ^ can be repeated for more dirs, inherited by submenus
 // ^ also searches in XDG_DATA_DIRS by default
 
+no-sort
+// ^ disables sorting frequently chosen menu items
+
 program "display name" {
     command foo bar baz
     // ^ required

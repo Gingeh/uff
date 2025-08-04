@@ -278,13 +278,15 @@ fn build_resolved_menu(
         );
     }
 
-    // Add unique cache path for this menu
-    args.push("--cache".to_string());
-    args.push(
-        make_fuzzel_cache_path(id, preset_name)
-            .display()
-            .to_string(),
-    );
+    if menu.sort {
+        // Add unique cache path for this menu
+        args.push("--cache".to_string());
+        args.push(
+            make_fuzzel_cache_path(id, preset_name)
+                .display()
+                .to_string(),
+        );
+    }
 
     // Build icon dirs with inheritance
     let icon_dirs: VecDeque<&Path> = menu
@@ -443,6 +445,7 @@ mod tests {
                     command: vec!["cmd1".to_string()],
                 }),
             }],
+            sort: true,
         };
         let inheritance_stack = vec![InheritanceFrame::default()];
         let mut id_gen = IdGenerator::new();
@@ -471,6 +474,7 @@ mod tests {
                     command: vec!["cmd1".to_string()],
                 }),
             }],
+            sort: true,
         };
         let config_result = build_resolved_menu(
             &menu_with_config,
@@ -520,9 +524,11 @@ mod tests {
                                 command: vec!["cmd2".to_string()],
                             }),
                         }],
+                        sort: true,
                     }),
                 },
             ],
+            sort: true,
         };
         let nested_result =
             build_resolved_menu(&nested_menu, &inheritance_stack, &mut id_gen, "testnested");

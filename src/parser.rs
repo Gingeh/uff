@@ -9,6 +9,7 @@ pub struct Menu {
     pub fuzzel_config: Vec<(String, String)>,
     pub icon_dirs: Vec<PathBuf>,
     pub items: Vec<Item>,
+    pub sort: bool,
 }
 
 #[derive(Debug)]
@@ -41,6 +42,7 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
     let mut fuzzel_config = Vec::new();
     let mut icon_dirs = Vec::new();
     let mut items = Vec::new();
+    let mut sort = true;
 
     for node in nodes {
         match node.name().value() {
@@ -129,6 +131,11 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
                 let children = node.children().context("item must have children")?.nodes();
                 items.push(parse_item_from_nodes(node.name().value(), name, children)?);
             }
+            "no-sort" => {
+                ensure!(node.children().is_none(), "no-sort must not have children");
+                ensure!(node.entries().is_empty(), "no-sort must not have arguments");
+                sort = false;
+            }
             "icon" => {} // already parsed by parse_item_from_nodes
             other => anyhow::bail!("unexpected node in menu: {}", other),
         }
@@ -139,6 +146,7 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
         fuzzel_config,
         icon_dirs,
         items,
+        sort,
     })
 }
 
