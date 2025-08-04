@@ -152,6 +152,13 @@ fn make_fuzzel_config_path(id: usize, preset_name: &str) -> PathBuf {
     config_path
 }
 
+fn make_fuzzel_cache_path(id: usize, preset_name: &str) -> PathBuf {
+    let mut cache_path = get_cache_dir();
+    cache_path.push(format!("{preset_name}{id}"));
+    cache_path.set_extension("fuzzel.cache");
+    cache_path
+}
+
 fn default_fuzzel_config_path() -> PathBuf {
     if cfg!(test) {
         PathBuf::from("placeholder.fuzzel.ini")
@@ -244,6 +251,8 @@ fn build_resolved_menu(
     id_gen: &mut IdGenerator,
     preset_name: &str,
 ) -> ResolvedMenu {
+    let id = id_gen.next_id();
+
     let mut args = menu.fuzzel_args.clone();
 
     let last_config = inheritance_stack
@@ -251,7 +260,6 @@ fn build_resolved_menu(
         .filter_map(|frame| frame.fuzzel_config_id)
         .next_back();
 
-    let mut id = None;
     if menu.fuzzel_config.is_empty() {
         if let Some(last_config) = last_config {
             args.push("--config".to_string());
@@ -262,14 +270,21 @@ fn build_resolved_menu(
             );
         }
     } else {
-        id = Some(id_gen.next_id());
         args.push("--config".to_string());
         args.push(
-            create_fuzzel_config(&menu.fuzzel_config, id.unwrap(), last_config, preset_name)
+            create_fuzzel_config(&menu.fuzzel_config, id, last_config, preset_name)
                 .display()
                 .to_string(),
         );
     }
+
+    // Add unique cache path for this menu
+    args.push("--cache".to_string());
+    args.push(
+        make_fuzzel_cache_path(id, preset_name)
+            .display()
+            .to_string(),
+    );
 
     // Build icon dirs with inheritance
     let icon_dirs: VecDeque<&Path> = menu
@@ -311,7 +326,7 @@ fn build_resolved_menu(
         fuzzel_config_id: if menu.fuzzel_config.is_empty() {
             None
         } else {
-            Some(id.unwrap())
+            Some(id)
         },
     };
 
@@ -431,8 +446,16 @@ mod tests {
         };
         let inheritance_stack = vec![InheritanceFrame::default()];
         let mut id_gen = IdGenerator::new();
-        let simple_result = build_resolved_menu(&simple_menu, &inheritance_stack, &mut id_gen, "testsimple");
-        assert_eq!(simple_result.args, vec!["--arg1"]);
+        let simple_result =
+            build_resolved_menu(&simple_menu, &inheritance_stack, &mut id_gen, "testsimple");
+        assert_eq!(
+            simple_result.args,
+            vec![
+                "--arg1",
+                "--cache",
+                "./target/test-cache/testsimple0.fuzzel.cache"
+            ]
+        );
         assert_eq!(simple_result.input, b"Item1\n");
         assert_eq!(simple_result.items.len(), 1);
 
@@ -449,16 +472,25 @@ mod tests {
                 }),
             }],
         };
-        let config_result =
-            build_resolved_menu(&menu_with_config, &inheritance_stack, &mut id_gen, "testconfig");
+        let config_result = build_resolved_menu(
+            &menu_with_config,
+            &inheritance_stack,
+            &mut id_gen,
+            "testconfig",
+        );
         assert_eq!(
             config_result.args,
-            vec!["--config", "./target/test-cache/testconfig0.fuzzel.ini"]
+            vec![
+                "--config",
+                "./target/test-cache/testconfig1.fuzzel.ini",
+                "--cache",
+                "./target/test-cache/testconfig1.fuzzel.cache"
+            ]
         );
 
         // Verify config file was created with correct content
         let config_content =
-            std::fs::read_to_string("./target/test-cache/testconfig0.fuzzel.ini").unwrap();
+            std::fs::read_to_string("./target/test-cache/testconfig1.fuzzel.ini").unwrap();
         assert_eq!(config_content, "include=placeholder.fuzzel.ini\nwidth=12\n");
 
         // Test nested menu with inheritance
@@ -492,7 +524,8 @@ mod tests {
                 },
             ],
         };
-        let nested_result = build_resolved_menu(&nested_menu, &inheritance_stack, &mut id_gen, "testnested");
+        let nested_result =
+            build_resolved_menu(&nested_menu, &inheritance_stack, &mut id_gen, "testnested");
 
         // Check top-level menu
         assert_eq!(
@@ -500,7 +533,9 @@ mod tests {
             vec![
                 "--base-arg",
                 "--config",
-                "./target/test-cache/testnested1.fuzzel.ini"
+                "./target/test-cache/testnested2.fuzzel.ini",
+                "--cache",
+                "./target/test-cache/testnested2.fuzzel.cache"
             ]
         );
         assert_eq!(nested_result.input, b"Item1\nSubmenu1\n");
@@ -510,7 +545,12 @@ mod tests {
         if let ResolvedItem::Menu(ref submenu) = nested_result.items[1] {
             assert_eq!(
                 submenu.args,
-                vec!["--config", "./target/test-cache/testnested2.fuzzel.ini"]
+                vec![
+                    "--config",
+                    "./target/test-cache/testnested3.fuzzel.ini",
+                    "--cache",
+                    "./target/test-cache/testnested3.fuzzel.cache"
+                ]
             );
             assert_eq!(submenu.input, b"Item2\n");
         } else {
@@ -519,17 +559,17 @@ mod tests {
 
         // Verify inheritance in config files
         let base_config =
-            std::fs::read_to_string("./target/test-cache/testnested1.fuzzel.ini").unwrap();
+            std::fs::read_to_string("./target/test-cache/testnested2.fuzzel.ini").unwrap();
         assert_eq!(
             base_config,
             "include=placeholder.fuzzel.ini\nbase_key=base_value\n"
         );
 
         let sub_config =
-            std::fs::read_to_string("./target/test-cache/testnested2.fuzzel.ini").unwrap();
+            std::fs::read_to_string("./target/test-cache/testnested3.fuzzel.ini").unwrap();
         assert_eq!(
             sub_config,
-            "include=./target/test-cache/testnested1.fuzzel.ini\nsub_key=sub_value\n"
+            "include=./target/test-cache/testnested2.fuzzel.ini\nsub_key=sub_value\n"
         );
     }
 
