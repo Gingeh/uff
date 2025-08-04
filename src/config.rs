@@ -136,10 +136,14 @@ fn make_fuzzel_config_path(id: usize, preset_name: &str) -> PathBuf {
 }
 
 fn default_fuzzel_config_path() -> PathBuf {
-    let mut path = default_config_dir();
-    path.push("fuzzel");
-    path.push("fuzzel.ini");
-    path
+    if cfg!(test) {
+        PathBuf::from("placeholder.fuzzel.ini")
+    } else {
+        let mut path = default_config_dir();
+        path.push("fuzzel");
+        path.push("fuzzel.ini");
+        path
+    }
 }
 
 fn create_fuzzel_config(
@@ -149,6 +153,12 @@ fn create_fuzzel_config(
     preset_name: &str,
 ) -> PathBuf {
     let config_path = make_fuzzel_config_path(id, preset_name);
+
+    // Create the directory if it doesn't exist
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
     let mut config_file = File::create(&config_path).unwrap();
 
     let inherit_path = inherit_id.map_or_else(default_fuzzel_config_path, |inherit_id| {
@@ -164,15 +174,19 @@ fn create_fuzzel_config(
 }
 
 fn get_cache_dir() -> PathBuf {
-    let mut path;
-    if let Ok(config_home) = std::env::var("XDG_CACHE_HOME") {
-        path = PathBuf::from(config_home);
+    if cfg!(test) {
+        PathBuf::from("./target/test-cache")
     } else {
-        path = std::env::home_dir().unwrap();
-        path.push(".cache");
+        let mut path;
+        if let Ok(config_home) = std::env::var("XDG_CACHE_HOME") {
+            path = PathBuf::from(config_home);
+        } else {
+            path = std::env::home_dir().unwrap();
+            path.push(".cache");
+        }
+        path.push(env!("CARGO_BIN_NAME"));
+        path
     }
-    path.push(env!("CARGO_BIN_NAME"));
-    path
 }
 
 // TODO: Log errors
@@ -289,7 +303,8 @@ fn build_resolved_menu(
             ItemContents::Menu(child_menu) => {
                 let mut child_inheritance_stack = inheritance_stack.to_vec();
                 child_inheritance_stack.push(child_frame.clone());
-                let resolved_child = build_resolved_menu(child_menu, &child_inheritance_stack, item_id, preset_name);
+                let resolved_child =
+                    build_resolved_menu(child_menu, &child_inheritance_stack, item_id, preset_name);
                 resolved_items.push(ResolvedItem::Menu(resolved_child));
             }
             ItemContents::Program(program) => {
@@ -575,4 +590,293 @@ fn parse_item_from_nodes(kind: &str, name: &str, nodes: &[KdlNode]) -> Result<It
         icon,
         contents,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_phase_comprehensive() {
+        // Test simple program parsing
+        let simple_config = r#"
+            program "Item1" {
+                command "cmd1"
+            }
+        "#;
+        let simple = parse_config(simple_config).unwrap();
+        assert_eq!(simple.items.len(), 1);
+        assert_eq!(simple.items[0].name, "Item1");
+        if let ItemContents::Program(ref prog) = simple.items[0].contents {
+            assert_eq!(prog.command, vec!["cmd1"]);
+        } else {
+            panic!("Expected program item");
+        }
+
+        // Test parsing with fuzzel config
+        let config_with_fuzzel = r#"
+            fuzzel-args "--arg1" "--arg2"
+            fuzzel-config {
+                key1 "value1"
+                key2 "value2"
+            }
+            program "Item1" {
+                icon "icon1"
+                command "cmd1"
+            }
+        "#;
+        let with_config = parse_config(config_with_fuzzel).unwrap();
+        assert_eq!(with_config.fuzzel_args, vec!["--arg1", "--arg2"]);
+        assert_eq!(with_config.fuzzel_config, vec![
+            ("key1".to_string(), "value1".to_string()),
+            ("key2".to_string(), "value2".to_string()),
+        ]);
+        assert_eq!(with_config.items[0].icon, Some("icon1".to_string()));
+
+        // Test nested menu parsing
+        let nested_config = r#"
+            program "Item1" {
+                command "cmd1"
+            }
+            menu "Submenu1" {
+                fuzzel-config {
+                    subkey "subvalue"
+                }
+                program "Item2" {
+                    command "cmd2" "arg2"
+                }
+            }
+        "#;
+        let nested = parse_config(nested_config).unwrap();
+        assert_eq!(nested.items.len(), 2);
+        assert_eq!(nested.items[0].name, "Item1");
+        assert_eq!(nested.items[1].name, "Submenu1");
+        if let ItemContents::Menu(ref submenu) = nested.items[1].contents {
+            assert_eq!(submenu.fuzzel_config, vec![("subkey".to_string(), "subvalue".to_string())]);
+            assert_eq!(submenu.items.len(), 1);
+            assert_eq!(submenu.items[0].name, "Item2");
+            if let ItemContents::Program(ref prog) = submenu.items[0].contents {
+                assert_eq!(prog.command, vec!["cmd2", "arg2"]);
+            } else {
+                panic!("Expected program in submenu");
+            }
+        } else {
+            panic!("Expected menu item");
+        }
+    }
+
+    #[test]
+    fn test_build_phase_comprehensive() {
+        // Test simple menu building
+        let simple_menu = Menu {
+            fuzzel_args: vec!["--arg1".to_string()],
+            fuzzel_config: vec![],
+            icon_dirs: vec![],
+            items: vec![Item {
+                name: "Item1".to_string(),
+                icon: None,
+                contents: ItemContents::Program(Program {
+                    command: vec!["cmd1".to_string()],
+                }),
+            }],
+        };
+        let inheritance_stack = vec![InheritanceFrame::default()];
+        let simple_result = build_resolved_menu(&simple_menu, &inheritance_stack, 0, "testsimple");
+        assert_eq!(simple_result.args, vec!["--arg1"]);
+        assert_eq!(simple_result.input, b"Item1\n");
+        assert_eq!(simple_result.items.len(), 1);
+
+        // Test menu with config file generation
+        let menu_with_config = Menu {
+            fuzzel_args: vec![],
+            fuzzel_config: vec![("width".to_string(), "12".to_string())],
+            icon_dirs: vec![],
+            items: vec![Item {
+                name: "Item1".to_string(),
+                icon: None,
+                contents: ItemContents::Program(Program {
+                    command: vec!["cmd1".to_string()],
+                }),
+            }],
+        };
+        let config_result =
+            build_resolved_menu(&menu_with_config, &inheritance_stack, 0, "testconfig");
+        assert_eq!(
+            config_result.args,
+            vec!["--config", "./target/test-cache/testconfig0.fuzzel.ini"]
+        );
+
+        // Verify config file was created with correct content
+        let config_content =
+            std::fs::read_to_string("./target/test-cache/testconfig0.fuzzel.ini").unwrap();
+        assert_eq!(config_content, "include=placeholder.fuzzel.ini\nwidth=12\n");
+
+        // Test nested menu with inheritance
+        let nested_menu = Menu {
+            fuzzel_args: vec!["--base-arg".to_string()],
+            fuzzel_config: vec![("base_key".to_string(), "base_value".to_string())],
+            icon_dirs: vec![],
+            items: vec![
+                Item {
+                    name: "Item1".to_string(),
+                    icon: None,
+                    contents: ItemContents::Program(Program {
+                        command: vec!["cmd1".to_string()],
+                    }),
+                },
+                Item {
+                    name: "Submenu1".to_string(),
+                    icon: None,
+                    contents: ItemContents::Menu(Menu {
+                        fuzzel_args: vec![],
+                        fuzzel_config: vec![("sub_key".to_string(), "sub_value".to_string())],
+                        icon_dirs: vec![],
+                        items: vec![Item {
+                            name: "Item2".to_string(),
+                            icon: None,
+                            contents: ItemContents::Program(Program {
+                                command: vec!["cmd2".to_string()],
+                            }),
+                        }],
+                    }),
+                },
+            ],
+        };
+        let nested_result = build_resolved_menu(&nested_menu, &inheritance_stack, 0, "testnested");
+
+        // Check top-level menu
+        assert_eq!(
+            nested_result.args,
+            vec![
+                "--base-arg",
+                "--config",
+                "./target/test-cache/testnested0.fuzzel.ini"
+            ]
+        );
+        assert_eq!(nested_result.input, b"Item1\nSubmenu1\n");
+        assert_eq!(nested_result.items.len(), 2);
+
+        // Check nested submenu
+        if let ResolvedItem::Menu(ref submenu) = nested_result.items[1] {
+            assert_eq!(
+                submenu.args,
+                vec!["--config", "./target/test-cache/testnested2.fuzzel.ini"]
+            );
+            assert_eq!(submenu.input, b"Item2\n");
+        } else {
+            panic!("Expected nested menu");
+        }
+
+        // Verify inheritance in config files
+        let base_config =
+            std::fs::read_to_string("./target/test-cache/testnested0.fuzzel.ini").unwrap();
+        assert_eq!(
+            base_config,
+            "include=placeholder.fuzzel.ini\nbase_key=base_value\n"
+        );
+
+        let sub_config =
+            std::fs::read_to_string("./target/test-cache/testnested2.fuzzel.ini").unwrap();
+        assert_eq!(
+            sub_config,
+            "include=./target/test-cache/testnested0.fuzzel.ini\nsub_key=sub_value\n"
+        );
+    }
+
+    #[test]
+    fn test_flatten_phase_comprehensive() {
+        // Test simple menu flattening
+        let simple_resolved = ResolvedMenu {
+            args: vec!["--arg1".to_string()],
+            input: b"Item1\n".to_vec(),
+            items: vec![ResolvedItem::Program(ComputedProgram {
+                command: vec!["cmd1".to_string()],
+            })],
+        };
+        let mut simple_items = Vec::new();
+        let simple_flattened = flatten_resolved_menu(&simple_resolved, &mut simple_items);
+
+        assert_eq!(simple_flattened.args, vec!["--arg1"]);
+        assert_eq!(simple_flattened.input, b"Item1\n");
+        assert_eq!(simple_flattened.items_offset, 0);
+        assert_eq!(simple_items.len(), 1);
+        if let ComputedItem::Program(ref prog) = simple_items[0] {
+            assert_eq!(prog.command, vec!["cmd1"]);
+        } else {
+            panic!("Expected program item");
+        }
+
+        // Test nested menu flattening with proper adjacency preservation
+        let nested_submenu = ResolvedMenu {
+            args: vec!["--sub-arg".to_string()],
+            input: b"Item2\n".to_vec(),
+            items: vec![ResolvedItem::Program(ComputedProgram {
+                command: vec!["cmd2".to_string()],
+            })],
+        };
+        let nested_resolved = ResolvedMenu {
+            args: vec!["--base-arg".to_string()],
+            input: b"Item1\nSubmenu1\n".to_vec(),
+            items: vec![
+                ResolvedItem::Program(ComputedProgram {
+                    command: vec!["cmd1".to_string()],
+                }),
+                ResolvedItem::Menu(nested_submenu),
+            ],
+        };
+
+        let mut nested_items = Vec::new();
+        let nested_flattened = flatten_resolved_menu(&nested_resolved, &mut nested_items);
+
+        // Check flattened menu structure
+        assert_eq!(nested_flattened.args, vec!["--base-arg"]);
+        assert_eq!(nested_flattened.input, b"Item1\nSubmenu1\n");
+        assert_eq!(nested_flattened.items_offset, 0);
+
+        // Check flattened items preserve adjacency
+        assert_eq!(nested_items.len(), 3);
+        if let ComputedItem::Program(ref prog) = nested_items[0] {
+            assert_eq!(prog.command, vec!["cmd1"]);
+        } else {
+            panic!("Expected first program item");
+        }
+        if let ComputedItem::Menu(ref menu) = nested_items[1] {
+            assert_eq!(menu.args, vec!["--sub-arg"]);
+            assert_eq!(menu.input, b"Item2\n");
+            assert_eq!(menu.items_offset, 2); // Points to next item
+        } else {
+            panic!("Expected menu item");
+        }
+        if let ComputedItem::Program(ref prog) = nested_items[2] {
+            assert_eq!(prog.command, vec!["cmd2"]);
+        } else {
+            panic!("Expected second program item");
+        }
+
+        // Test escaped input handling
+        let escaped_resolved = ResolvedMenu {
+            args: vec![],
+            input: b"Item1\0icon\x1f/path/icon.png\nItem2\n".to_vec(),
+            items: vec![
+                ResolvedItem::Program(ComputedProgram {
+                    command: vec!["cmd1".to_string()],
+                }),
+                ResolvedItem::Program(ComputedProgram {
+                    command: vec!["cmd2".to_string()],
+                }),
+            ],
+        };
+
+        let mut escaped_items = Vec::new();
+        let escaped_flattened = flatten_resolved_menu(&escaped_resolved, &mut escaped_items);
+
+        // Test the escaped input format
+        let expected_input_escaped = escaped_resolved.input.escape_ascii().to_string();
+        let actual_input_escaped = escaped_flattened.input.escape_ascii().to_string();
+        assert_eq!(actual_input_escaped, expected_input_escaped);
+        assert_eq!(
+            actual_input_escaped,
+            "Item1\\x00icon\\x1f/path/icon.png\\nItem2\\n"
+        );
+    }
 }
