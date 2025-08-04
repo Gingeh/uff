@@ -8,6 +8,7 @@ use std::{
 };
 
 mod config;
+mod parser;
 use config::ComputedItem;
 
 pub fn main() -> Result<()> {
