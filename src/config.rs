@@ -56,6 +56,22 @@ pub struct ComputedProgram {
     pub command: Vec<String>,
 }
 
+struct IdGenerator {
+    counter: usize,
+}
+
+impl IdGenerator {
+    const fn new() -> Self {
+        Self { counter: 0 }
+    }
+
+    const fn next_id(&mut self) -> usize {
+        let id = self.counter;
+        self.counter += 1;
+        id
+    }
+}
+
 #[derive(Clone)]
 struct InheritanceFrame {
     icon_dirs: Vec<PathBuf>,
@@ -206,9 +222,10 @@ fn cache_config(path: &Path, computed_config: &ComputedConfig) {
 fn compute_config(config_string: &str, hash: &[u8], preset_name: &str) -> Result<ComputedConfig> {
     let config = parser::parse_config(config_string)?;
     let inheritance_stack = vec![InheritanceFrame::default()];
+    let mut id_gen = IdGenerator::new();
 
     // Build phase: create fully resolved tree with inheritance applied
-    let resolved_menu = build_resolved_menu(&config, &inheritance_stack, 0, preset_name);
+    let resolved_menu = build_resolved_menu(&config, &inheritance_stack, &mut id_gen, preset_name);
 
     let mut items = Vec::new();
     // Flatten phase: convert tree to a flat list
@@ -224,7 +241,7 @@ fn compute_config(config_string: &str, hash: &[u8], preset_name: &str) -> Result
 fn build_resolved_menu(
     menu: &Menu,
     inheritance_stack: &[InheritanceFrame],
-    id: usize,
+    id_gen: &mut IdGenerator,
     preset_name: &str,
 ) -> ResolvedMenu {
     let mut args = menu.fuzzel_args.clone();
@@ -234,6 +251,7 @@ fn build_resolved_menu(
         .filter_map(|frame| frame.fuzzel_config_id)
         .next_back();
 
+    let mut id = None;
     if menu.fuzzel_config.is_empty() {
         if let Some(last_config) = last_config {
             args.push("--config".to_string());
@@ -244,9 +262,10 @@ fn build_resolved_menu(
             );
         }
     } else {
+        id = Some(id_gen.next_id());
         args.push("--config".to_string());
         args.push(
-            create_fuzzel_config(&menu.fuzzel_config, id, last_config, preset_name)
+            create_fuzzel_config(&menu.fuzzel_config, id.unwrap(), last_config, preset_name)
                 .display()
                 .to_string(),
         );
@@ -292,20 +311,19 @@ fn build_resolved_menu(
         fuzzel_config_id: if menu.fuzzel_config.is_empty() {
             None
         } else {
-            Some(id)
+            Some(id.unwrap())
         },
     };
 
     // Recursively build resolved items
     let mut resolved_items = Vec::new();
-    for (item_index, item) in menu.items.iter().enumerate() {
-        let item_id = id * 1000 + item_index + 1; // Generate unique IDs for nested items
+    for item in &menu.items {
         match &item.contents {
             ItemContents::Menu(child_menu) => {
                 let mut child_inheritance_stack = inheritance_stack.to_vec();
                 child_inheritance_stack.push(child_frame.clone());
                 let resolved_child =
-                    build_resolved_menu(child_menu, &child_inheritance_stack, item_id, preset_name);
+                    build_resolved_menu(child_menu, &child_inheritance_stack, id_gen, preset_name);
                 resolved_items.push(ResolvedItem::Menu(resolved_child));
             }
             ItemContents::Program(program) => {
@@ -412,7 +430,8 @@ mod tests {
             }],
         };
         let inheritance_stack = vec![InheritanceFrame::default()];
-        let simple_result = build_resolved_menu(&simple_menu, &inheritance_stack, 0, "testsimple");
+        let mut id_gen = IdGenerator::new();
+        let simple_result = build_resolved_menu(&simple_menu, &inheritance_stack, &mut id_gen, "testsimple");
         assert_eq!(simple_result.args, vec!["--arg1"]);
         assert_eq!(simple_result.input, b"Item1\n");
         assert_eq!(simple_result.items.len(), 1);
@@ -431,7 +450,7 @@ mod tests {
             }],
         };
         let config_result =
-            build_resolved_menu(&menu_with_config, &inheritance_stack, 0, "testconfig");
+            build_resolved_menu(&menu_with_config, &inheritance_stack, &mut id_gen, "testconfig");
         assert_eq!(
             config_result.args,
             vec!["--config", "./target/test-cache/testconfig0.fuzzel.ini"]
@@ -473,7 +492,7 @@ mod tests {
                 },
             ],
         };
-        let nested_result = build_resolved_menu(&nested_menu, &inheritance_stack, 0, "testnested");
+        let nested_result = build_resolved_menu(&nested_menu, &inheritance_stack, &mut id_gen, "testnested");
 
         // Check top-level menu
         assert_eq!(
@@ -481,7 +500,7 @@ mod tests {
             vec![
                 "--base-arg",
                 "--config",
-                "./target/test-cache/testnested0.fuzzel.ini"
+                "./target/test-cache/testnested1.fuzzel.ini"
             ]
         );
         assert_eq!(nested_result.input, b"Item1\nSubmenu1\n");
@@ -500,7 +519,7 @@ mod tests {
 
         // Verify inheritance in config files
         let base_config =
-            std::fs::read_to_string("./target/test-cache/testnested0.fuzzel.ini").unwrap();
+            std::fs::read_to_string("./target/test-cache/testnested1.fuzzel.ini").unwrap();
         assert_eq!(
             base_config,
             "include=placeholder.fuzzel.ini\nbase_key=base_value\n"
@@ -510,7 +529,7 @@ mod tests {
             std::fs::read_to_string("./target/test-cache/testnested2.fuzzel.ini").unwrap();
         assert_eq!(
             sub_config,
-            "include=./target/test-cache/testnested0.fuzzel.ini\nsub_key=sub_value\n"
+            "include=./target/test-cache/testnested1.fuzzel.ini\nsub_key=sub_value\n"
         );
     }
 
