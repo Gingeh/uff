@@ -1,6 +1,8 @@
 #![feature(exit_status_error)]
 
 use anyhow::{Context, Result, ensure};
+use colog::format::CologStyle;
+use log::{info, Level, LevelFilter};
 use std::{
     io::Write,
     path::PathBuf,
@@ -11,7 +13,25 @@ mod config;
 mod parser;
 use config::ComputedItem;
 
+struct LogFormatter;
+impl CologStyle for LogFormatter {
+    fn level_token(&self, level: &log::Level) -> &str {
+        match *level {
+            Level::Error => "E",
+            Level::Warn => "W",
+            Level::Info => "I",
+            Level::Debug => "D",
+            Level::Trace => "T",
+        }
+    }
+}
+
 pub fn main() -> Result<()> {
+    colog::default_builder()
+        .format(colog::formatter(LogFormatter))
+        .filter_level(LevelFilter::Info)
+        .init();
+
     let mut args = std::env::args();
     ensure!(args.len() < 3, "expected at most one argument");
     let config_path = args
@@ -59,6 +79,7 @@ pub fn main() -> Result<()> {
         unreachable!();
     };
 
+    info!("running program: {}", program.command.join(" "));
     Command::new(&program.command[0])
         .args(&program.command[1..])
         .spawn()

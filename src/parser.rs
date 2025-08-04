@@ -1,6 +1,7 @@
 use crate::config::home;
 use anyhow::{Context, Result, bail, ensure};
 use kdl::{KdlDocument, KdlNode};
+use log::warn;
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -47,7 +48,10 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
     for node in nodes {
         match node.name().value() {
             "fuzzel-args" => {
-                fuzzel_args.clear();
+                if !fuzzel_args.is_empty() {
+                    warn!("fuzzel-args already defined, overwriting");
+                    fuzzel_args.clear();
+                }
                 ensure!(
                     node.children().is_none(),
                     "fuzzel-args must not have children"
@@ -65,7 +69,10 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
                 }
             }
             "fuzzel-config" => {
-                fuzzel_config.clear();
+                if !fuzzel_config.is_empty() {
+                    warn!("fuzzel-config already defined, overwriting");
+                    fuzzel_config.clear();
+                }
                 ensure!(
                     node.entries().is_empty(),
                     "fuzzel-config must not have arguments, only children"
@@ -111,7 +118,11 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
                     .unwrap()
                     .replace('~', &home());
                 let path = PathBuf::from(path_str);
-                ensure!(path.is_absolute(), "icon-dir path must be absolute");
+                if !path.is_absolute() {
+                    warn!(
+                        "relative icon-dirs can behave unexpectedly, consider using absolute paths"
+                    );
+                }
                 icon_dirs.push(path);
             }
             "menu" | "program" => {
@@ -134,6 +145,9 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
             "no-sort" => {
                 ensure!(node.children().is_none(), "no-sort must not have children");
                 ensure!(node.entries().is_empty(), "no-sort must not have arguments");
+                if !sort {
+                    warn!("no-sort already defined");
+                }
                 sort = false;
             }
             "icon" => {} // already parsed by parse_item_from_nodes
@@ -156,7 +170,10 @@ fn parse_program_from_nodes(nodes: &[KdlNode]) -> Result<Program> {
     for node in nodes {
         match node.name().value() {
             "command" => {
-                command.clear();
+                if !command.is_empty() {
+                    warn!("command already defined, overwriting");
+                    command.clear();
+                }
                 ensure!(node.children().is_none(), "command must not have children");
                 for entry in node.entries() {
                     ensure!(
@@ -196,6 +213,9 @@ fn parse_item_from_nodes(kind: &str, name: &str, nodes: &[KdlNode]) -> Result<It
                 node.entries()[0].value().is_string(),
                 "icon argument must be a string"
             );
+            if icon.is_some() {
+                warn!("icon already defined, overwriting");
+            }
             icon = Some(node.entries()[0].value().as_string().unwrap().to_owned());
         }
     }

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use bitcode::{Decode, Encode};
+use log::{error, info, warn};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
@@ -27,6 +28,7 @@ pub fn default_config_path() -> PathBuf {
     let mut path = default_config_dir();
     path.push(env!("CARGO_BIN_NAME"));
     path.push("default.kdl");
+    info!("using default config path");
     path
 }
 
@@ -97,6 +99,7 @@ impl InheritanceFrame {
         let mut data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
         if data_dirs.is_empty() {
             data_dirs = "/usr/local/share/:/usr/share/".to_string();
+            info!("XDG_DATA_DIRS is empty, using {data_dirs} as default");
         }
 
         let mut icon_dirs: Vec<PathBuf> = std::env::split_paths(&data_dirs).collect();
@@ -105,6 +108,7 @@ impl InheritanceFrame {
         if data_home.is_empty() {
             let home = std::env::home_dir().unwrap();
             data_home = format!("{}/.local/share/", home.display());
+            warn!("XDG_DATA_HOME is empty, using {data_home} as default");
         }
         icon_dirs.push(PathBuf::from(data_home));
 
@@ -127,10 +131,18 @@ pub fn get_computed_config(path: &Path) -> Result<ComputedConfig> {
         .context("preset name contains non-utf8 characters")?;
     let cache_path = make_cache_path(preset_name);
     let maybe_cached_config = read_cached_config(&cache_path);
-    if let Some(cached_config) = maybe_cached_config
-        && cached_config.hash == actual_hash[..8]
-    {
-        return Ok(cached_config);
+
+    match maybe_cached_config {
+        Some(cached_config) => {
+            if cached_config.hash == actual_hash[..8] {
+                info!("using cached config");
+                return Ok(cached_config);
+            }
+            info!("cached config is stale, rebuilding");
+        }
+        None => {
+            info!("no cached config, building from scratch");
+        }
     }
 
     let computed_config = compute_config(&config_string, actual_hash.as_slice(), preset_name)?;
@@ -213,17 +225,26 @@ fn get_cache_dir() -> PathBuf {
     }
 }
 
-// TODO: Log errors
 fn read_cached_config(path: &Path) -> Option<ComputedConfig> {
     let bytes = std::fs::read(path).ok()?;
-    bitcode::decode(&bytes).ok()
+    let decoded = bitcode::decode(&bytes);
+    match decoded {
+        Ok(decoded) => Some(decoded),
+        Err(error) => {
+            error!("failed to decode cached config: {error}");
+            None
+        }
+    }
 }
 
-// TODO: Log errors
 fn cache_config(path: &Path, computed_config: &ComputedConfig) {
     let bytes = bitcode::encode(computed_config);
-    let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(path, bytes);
+    if let Err(error) = std::fs::create_dir_all(path.parent().unwrap()) {
+        error!("failed to create cache directory: {error}");
+    }
+    if let Err(error) = std::fs::write(path, bytes) {
+        error!("failed to write cache file: {error}");
+    }
 }
 
 fn compute_config(config_string: &str, hash: &[u8], preset_name: &str) -> Result<ComputedConfig> {
@@ -410,6 +431,7 @@ pub fn home() -> String {
 
 fn search_for_icon<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> Option<PathBuf> {
     if name.contains('/') {
+        info!("icon name contains a '/', treating as full path: {name}");
         return None; // probably a full path
     }
 
@@ -423,6 +445,7 @@ fn search_for_icon<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> 
             }
         }
     }
+    error!("icon '{name}' not found in specified directories");
     None
 }
 
