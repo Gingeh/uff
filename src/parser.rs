@@ -1,8 +1,9 @@
 use crate::config::home;
-use anyhow::{Context, Result, bail, ensure};
 use kdl::{KdlDocument, KdlNode};
 use log::warn;
-use std::path::PathBuf;
+use miette::{Diagnostic, LabeledSpan, Result, SourceSpan, miette};
+use std::{fmt::Debug, path::PathBuf};
+use thiserror::Error;
 
 #[derive(Debug)]
 pub struct Menu {
@@ -30,118 +31,234 @@ pub struct Program {
     pub command: Vec<String>,
 }
 
-pub fn parse_config(src: &str) -> Result<Menu> {
-    let doc = src
-        .parse::<KdlDocument>()
-        .context("failed to parse KDL document")?;
-    parse_menu_from_nodes(doc.nodes())
+// This is used to remove the default unnamed source from a KdlDiagnostic
+// so it can be replaced with a named source.
+#[derive(Debug, Error)]
+#[error(transparent)]
+struct KdlDiagnosticWrapper(kdl::KdlDiagnostic);
+impl Diagnostic for KdlDiagnosticWrapper {
+    fn labels<'a>(&'a self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + 'a>> {
+        self.0.labels()
+    }
+    fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        self.0.help()
+    }
 }
 
-fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
+pub fn parse_config(src: &str) -> Result<Menu> {
+    let doc = src.parse::<KdlDocument>().map_err(|e| {
+        let original = e.diagnostics[0].clone();
+        KdlDiagnosticWrapper(original)
+    })?;
+    parse_menu_from_nodes(&doc)
+}
+
+fn no_parameters(node: &KdlNode) -> Result<()> {
+    for entry in node.entries() {
+        if let Some(name) = entry.name() {
+            return Err(miette!(
+                labels = vec![LabeledSpan::new_primary_with_span(
+                    Some("remove this name".to_string()),
+                    name.span(),
+                )],
+                "{} should not have any named parameters",
+                node.name().value().to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn no_arguments(node: &KdlNode) -> Result<()> {
+    if let Some(first) = node.entries().first() {
+        let last = node.entries().last().unwrap().span();
+        let full_span = SourceSpan::new(
+            first.span().offset().into(),
+            (last.offset() + last.len()) - first.span().offset(),
+        );
+        return Err(miette!(
+            labels = vec![LabeledSpan::new_primary_with_span(
+                Some("these".to_string()),
+                full_span
+            )],
+            "{} should not have any arguments",
+            node.name().value().to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn no_children(node: &KdlNode) -> Result<()> {
+    if let Some(children) = node.children() {
+        let this = if children.nodes().len() < 2 {
+            "remove this".to_string()
+        } else {
+            "remove these".to_string()
+        };
+        return Err(miette!(
+            labels = vec![LabeledSpan::new_primary_with_span(
+                Some(this),
+                children.span()
+            )],
+            "{} should not have any children",
+            node.name().value().to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn one_argument(node: &KdlNode) -> Result<String> {
+    if node.entries().len() != 1 {
+        let labeled_span = if node.entries().is_empty() {
+            let after_node = node.name().span().offset() + node.name().span().len();
+            LabeledSpan::new_primary_with_span(
+                Some("here".to_string()),
+                SourceSpan::new(after_node.into(), 0),
+            )
+        } else {
+            let first = node.entries()[1].span();
+            let last = node.entries().last().unwrap().span();
+            let full_span = SourceSpan::new(
+                first.offset().into(),
+                (last.offset() + last.len()) - first.offset(),
+            );
+            let these = if node.entries().len() < 3 {
+                "remove this".to_string()
+            } else {
+                "remove these".to_string()
+            };
+            LabeledSpan::new_primary_with_span(Some(these), full_span)
+        };
+        return Err(miette!(
+            labels = vec![labeled_span],
+            "{} should have exactly one argument",
+            node.name().value().to_owned(),
+        ));
+    }
+
+    let Some(argument) = node.entries()[0].value().as_string() else {
+        return Err(miette!(
+            labels = vec![LabeledSpan::new_primary_with_span(
+                Some("this".to_string()),
+                node.entries()[0].span()
+            )],
+            help = "try wrapping it in quotes",
+            "argument should be a string",
+        ));
+    };
+
+    Ok(argument.to_owned())
+}
+
+fn many_arguments(node: &KdlNode) -> Result<Vec<String>> {
+    if node.entries().is_empty() {
+        let after_node = node.name().span().offset() + node.name().span().len();
+        return Err(miette!(
+            labels = vec![LabeledSpan::new_primary_with_span(
+                Some("here".to_string()),
+                SourceSpan::new(after_node.into(), 0),
+            )],
+            "{} should have arguments",
+            node.name().value().to_owned(),
+        ));
+    }
+
+    let mut args = Vec::new();
+    for entry in node.entries() {
+        if let Some(value) = entry.value().as_string() {
+            args.push(value.to_owned());
+        } else {
+            return Err(miette!(
+                labels = vec![LabeledSpan::new_primary_with_span(
+                    Some("this".to_string()),
+                    entry.span()
+                )],
+                help = "try wrapping it in quotes",
+                "argument should be a string",
+            ));
+        }
+    }
+    Ok(args)
+}
+
+fn children(node: &KdlNode) -> Result<&KdlDocument> {
+    node.children().ok_or_else(|| {
+        let after_entries = if node.entries().is_empty() {
+            node.name().span().offset() + node.name().span().len()
+        } else {
+            let last_entry = node.entries().last().unwrap();
+            last_entry.span().offset() + last_entry.span().len()
+        };
+        miette!(
+            labels = vec![LabeledSpan::new_primary_with_span(
+                Some("here".to_string()),
+                SourceSpan::new(after_entries.into(), 0),
+            )],
+            "{} should have children",
+            node.name().value().to_owned(),
+        )
+    })
+}
+
+fn parse_menu_from_nodes(doc: &KdlDocument) -> Result<Menu> {
     let mut fuzzel_args = Vec::new();
     let mut fuzzel_config = Vec::new();
     let mut icon_dirs = Vec::new();
     let mut items = Vec::new();
 
-    for node in nodes {
+    for node in doc.nodes() {
         match node.name().value() {
             "fuzzel-args" => {
                 if !fuzzel_args.is_empty() {
                     warn!("fuzzel-args already defined, overwriting");
-                    fuzzel_args.clear();
                 }
-                ensure!(
-                    node.children().is_none(),
-                    "fuzzel-args must not have children"
-                );
-                for entry in node.entries() {
-                    ensure!(
-                        entry.name().is_none(),
-                        "fuzzel-args arguments must not be named"
-                    );
-                    ensure!(
-                        entry.value().is_string(),
-                        "fuzzel-args arguments must be strings"
-                    );
-                    fuzzel_args.push(entry.value().as_string().unwrap().to_owned());
-                }
+                fuzzel_args = many_arguments(node)?;
+                no_parameters(node)?;
+                no_children(node)?;
             }
             "fuzzel-config" => {
                 if !fuzzel_config.is_empty() {
                     warn!("fuzzel-config already defined, overwriting");
                     fuzzel_config.clear();
                 }
-                ensure!(
-                    node.entries().is_empty(),
-                    "fuzzel-config must not have arguments, only children"
-                );
-                let children = node
-                    .children()
-                    .context("fuzzel-config must have children")?;
+                let children = children(node)?;
                 for kv in children.nodes() {
                     let key = kv.name().value().to_owned();
-                    ensure!(
-                        kv.entries().len() == 1,
-                        "fuzzel-config key must have exactly one argument"
-                    );
-                    ensure!(
-                        kv.entries()[0].name().is_none(),
-                        "fuzzel-config key argument must not be named"
-                    );
-                    ensure!(
-                        kv.entries()[0].value().is_string(),
-                        "fuzzel-config key argument must be a string"
-                    );
-                    let value = kv.entries()[0].value().as_string().unwrap().to_owned();
+                    let value = one_argument(kv)?;
                     fuzzel_config.push((key, value));
+                    no_parameters(kv)?;
                 }
+                no_arguments(node)?;
             }
             "icon-dir" => {
-                ensure!(node.children().is_none(), "icon-dir must not have children");
-                ensure!(
-                    node.entries().len() == 1,
-                    "icon-dir must have exactly one argument"
-                );
-                ensure!(
-                    node.entries()[0].name().is_none(),
-                    "icon-dir argument must not be named"
-                );
-                ensure!(
-                    node.entries()[0].value().is_string(),
-                    "icon-dir argument must be a string"
-                );
-                let path_str = node.entries()[0]
-                    .value()
-                    .as_string()
-                    .unwrap()
-                    .replace('~', &home());
-                let path = PathBuf::from(path_str);
+                let path_str = one_argument(node)?;
+                let path = PathBuf::from(path_str.replace('~', &home()));
                 if !path.is_absolute() {
                     warn!(
                         "relative icon-dirs can behave unexpectedly, consider using absolute paths"
                     );
                 }
                 icon_dirs.push(path);
+                no_parameters(node)?;
+                no_children(node)?;
             }
             "menu" | "program" => {
-                ensure!(
-                    node.entries().len() == 1,
-                    "item must have exactly one argument"
-                );
-                ensure!(
-                    node.entries()[0].name().is_none(),
-                    "item name must not be a named argument"
-                );
-                ensure!(
-                    node.entries()[0].value().is_string(),
-                    "item name must be a string"
-                );
-                let name = node.entries()[0].value().as_string().unwrap();
-                let children = node.children().context("item must have children")?.nodes();
-                items.push(parse_item_from_nodes(node.name().value(), name, children)?);
+                let name = one_argument(node)?;
+                let children = children(node)?;
+                items.push(parse_item_from_nodes(node.name().value(), &name, children)?);
+                no_parameters(node)?;
             }
             "icon" => {} // already parsed by parse_item_from_nodes
-            other => anyhow::bail!("unexpected node in menu: {}", other),
+            other => {
+                return Err(miette!(
+                    labels = vec![LabeledSpan::new_primary_with_span(
+                        Some("this".to_string()),
+                        node.span()
+                    )],
+                    "unexpected node in menu: {}",
+                    other,
+                ));
+            }
         }
     }
 
@@ -153,65 +270,63 @@ fn parse_menu_from_nodes(nodes: &[KdlNode]) -> Result<Menu> {
     })
 }
 
-fn parse_program_from_nodes(nodes: &[KdlNode]) -> Result<Program> {
+fn parse_program_from_nodes(doc: &KdlDocument) -> Result<Program> {
     let mut command: Vec<String> = Vec::new();
 
-    for node in nodes {
+    for node in doc.nodes() {
         match node.name().value() {
             "command" => {
                 if !command.is_empty() {
                     warn!("command already defined, overwriting");
-                    command.clear();
                 }
-                ensure!(node.children().is_none(), "command must not have children");
-                for entry in node.entries() {
-                    ensure!(
-                        entry.name().is_none(),
-                        "command arguments must not be named"
-                    );
-                    ensure!(
-                        entry.value().is_string(),
-                        "command arguments must be strings"
-                    );
-                    command.push(entry.value().as_string().unwrap().to_owned());
-                }
+                command = many_arguments(node)?;
+                no_parameters(node)?;
+                no_children(node)?;
             }
             "icon" => {} // already parsed by parse_item_from_nodes
-            other => bail!("unexpected node in program: {}", other),
+            other => {
+                return Err(miette!(
+                    labels = vec![LabeledSpan::new_primary_with_span(
+                        Some("this".to_string()),
+                        node.span()
+                    )],
+                    "unexpected node in program: {}",
+                    other,
+                ));
+            }
         }
+    }
+
+    if command.is_empty() {
+        return Err(miette!(
+            labels = vec![LabeledSpan::new_primary_with_span(
+                Some("here".to_string()),
+                doc.span(),
+            )],
+            "program should have a command",
+        ));
     }
 
     Ok(Program { command })
 }
 
-fn parse_item_from_nodes(kind: &str, name: &str, nodes: &[KdlNode]) -> Result<Item> {
+fn parse_item_from_nodes(kind: &str, name: &str, doc: &KdlDocument) -> Result<Item> {
     let mut icon: Option<String> = None;
 
-    for node in nodes {
+    for node in doc.nodes() {
         if node.name().value() == "icon" {
-            ensure!(node.children().is_none(), "icon must not have children");
-            ensure!(
-                node.entries().len() == 1,
-                "icon must have exactly one argument"
-            );
-            ensure!(
-                node.entries()[0].name().is_none(),
-                "icon argument must not be named"
-            );
-            ensure!(
-                node.entries()[0].value().is_string(),
-                "icon argument must be a string"
-            );
             if icon.is_some() {
                 warn!("icon already defined, overwriting");
             }
-            icon = Some(node.entries()[0].value().as_string().unwrap().to_owned());
+            icon = Some(one_argument(node)?);
+            no_parameters(node)?;
+            no_children(node)?;
         }
     }
 
     let contents = match kind {
-        "menu" => ItemContents::Menu(parse_menu_from_nodes(nodes)?),
-        "program" => ItemContents::Program(parse_program_from_nodes(nodes)?),
+        "menu" => ItemContents::Menu(parse_menu_from_nodes(doc)?),
+        "program" => ItemContents::Program(parse_program_from_nodes(doc)?),
         _ => unreachable!(),
     };
 

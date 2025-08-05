@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
 use bitcode::{Decode, Encode};
 use log::{error, info, warn};
+use miette::{Context, IntoDiagnostic, NamedSource, Result};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
@@ -121,6 +121,7 @@ impl InheritanceFrame {
 
 pub fn get_computed_config(path: &Path) -> Result<ComputedConfig> {
     let config_string = std::fs::read_to_string(path)
+        .into_diagnostic()
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let actual_hash = Sha256::digest(&config_string);
 
@@ -145,7 +146,8 @@ pub fn get_computed_config(path: &Path) -> Result<ComputedConfig> {
         }
     }
 
-    let computed_config = compute_config(&config_string, actual_hash.as_slice(), preset_name)?;
+    let computed_config =
+        compute_config(&config_string, actual_hash.as_slice(), preset_name, path)?;
     cache_config(&cache_path, &computed_config);
     Ok(computed_config)
 }
@@ -247,8 +249,20 @@ fn cache_config(path: &Path, computed_config: &ComputedConfig) {
     }
 }
 
-fn compute_config(config_string: &str, hash: &[u8], preset_name: &str) -> Result<ComputedConfig> {
-    let config = parser::parse_config(config_string)?;
+fn compute_config(
+    config_string: &str,
+    hash: &[u8],
+    preset_name: &str,
+    path: &Path,
+) -> Result<ComputedConfig> {
+    let config = parser::parse_config(config_string)
+        .wrap_err("failed to parse config")
+        .map_err(|report| {
+            report.with_source_code(NamedSource::new(
+                path.display().to_string(),
+                config_string.to_string(),
+            ))
+        })?;
     let inheritance_stack = vec![InheritanceFrame::default()];
     let mut id_gen = IdGenerator::new();
 
