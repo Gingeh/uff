@@ -1,6 +1,4 @@
-#![feature(exit_status_error)]
-
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use colog::format::CologStyle;
 use log::{Level, LevelFilter, info};
 use std::{
@@ -71,10 +69,7 @@ pub fn main() -> Result<()> {
             .wait_with_output()
             .context("failed to wait on fuzzel")?;
 
-        output
-            .status
-            .exit_ok()
-            .context("fuzzel exited without success")?;
+        ensure!(output.status.success(), "fuzzel exited without success");
 
         let stdout = std::str::from_utf8(&output.stdout)?;
         let selected_index: usize = stdout.trim().parse()?;
