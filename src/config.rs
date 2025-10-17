@@ -146,8 +146,7 @@ pub fn get_computed_config(path: &Path) -> Result<ComputedConfig> {
         }
     }
 
-    let computed_config =
-        compute_config(&config_string, actual_hash.as_slice(), preset_name, path)?;
+    let computed_config = compute_config(&config_string, &actual_hash, preset_name, path)?;
     cache_config(&cache_path, &computed_config);
     Ok(computed_config)
 }

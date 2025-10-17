@@ -1,7 +1,10 @@
 [package]
-name = "uff" # Untitled Fuzzel Frontend
-version = "0.1.0"
+name = "uff"
+description = "untitled fuzzel frontend"
+version = "0.1.1"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Gingeh/uff"
 
 [dependencies]
 bitcode = "0.6.6"
