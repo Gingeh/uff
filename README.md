@@ -1,7 +1,7 @@
 # uff: untitled fuzzel frontend
 
-[![Crates.io Version](https://img.shields.io/crates/v/uff)](https://crates.io/crates/uff)
-![Crates.io License](https://img.shields.io/crates/l/uff)
+[![Crates.io Version](https://img.shields.io/crates/v/uff_cli)](https://crates.io/crates/uff_cli)
+![Crates.io License](https://img.shields.io/crates/l/uff_cli)
 
 ![untitled fuzzel frontend](demo.png)
 
@@ -20,7 +20,7 @@ uff is strongly inspired by [raffi](https://github.com/chmouel/raffi/).
 ## installation + setup
 
 ```bash
-cargo install --locked uff
+cargo install --locked uff_cli
 mkdir ~/.config/uff/
 $EDITOR ~/.config/uff/default.kdl
 # see below section for the config format

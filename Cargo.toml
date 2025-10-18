@@ -1,10 +1,14 @@
 [package]
-name = "uff"
+name = "uff_cli"
 description = "untitled fuzzel frontend"
 version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Gingeh/uff"
+
+[[bin]]
+name = "uff"
+path = "src/main.rs"
 
 [dependencies]
 bitcode = "0.6.6"
